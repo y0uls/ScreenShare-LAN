@@ -42,8 +42,21 @@ Write-Host "  +==============================================+" -ForegroundColor
 Write-Host ""
 
 # --- SAISIE ---
-if (-not $TargetPC) { $TargetPC = Read-Host "`n  Poste cible (IP ou nom)" }
-if (-not $Domain)   { $Domain   = Read-Host "  Domaine (AD)" }
+if (-not $Domain) { $Domain = Read-Host "  Domaine (AD)" }
+
+# Boucle ping : on ne continue pas tant que la cible ne repond pas (repris de ReverseShell.ps1)
+do {
+    if (-not $TargetPC) { $TargetPC = Read-Host "`n  Poste cible (IP ou nom)" }
+    Write-Host ""
+    Write-Host "  Verification de la connectivite reseau vers $TargetPC ..." -ForegroundColor Gray
+    if (-not (Test-Connection -ComputerName $TargetPC -Count 1 -Quiet)) {
+        Write-Host "  [ERREUR] Le PC $TargetPC n'est pas joignable (ping echoue)." -ForegroundColor Red
+        Write-Host ""
+        $TargetPC = ""
+    }
+} while (-not $TargetPC)
+
+Write-Host "  OK - Le PC $TargetPC est joignable (ping reussi)." -ForegroundColor Green
 $Host.UI.RawUI.WindowTitle = ($WindowTitle -f $TargetPC)
 Write-Host ""
 Write-Host "  Entrez vos credentials admin ($Domain) :" -ForegroundColor Yellow
@@ -51,59 +64,52 @@ $inputUser  = Read-Host "  Nom d'utilisateur (sans domaine)"
 $securePass = Read-Host "  Mot de passe pour $Domain\$inputUser" -AsSecureString
 $Credential = New-Object System.Management.Automation.PSCredential("$Domain\$inputUser", $securePass)
 
-# --- [1/5] CONNECTIVITE & WinRM ---
+# --- [1/5] WinRM --- (logique reprise telle quelle de ReverseShell.ps1)
 Write-Host ""
-Write-Host "  [1/5] Test connectivite et WinRM vers $TargetPC ..." -ForegroundColor Gray
-if (-not (Test-Connection -ComputerName $TargetPC -Count 1 -Quiet)) {
-    Write-Host "          Ping sans reponse (ICMP filtre ?). On tente WinRM quand meme..." -ForegroundColor Yellow
-}
+Write-Host "  [1/5] Verification de WinRM (WSMan) sur $TargetPC ..." -ForegroundColor Gray
+
+$BSTR             = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePass)
+$plainpassString  = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
 
 $winrmOk = $false
 try {
     Test-WSMan -ComputerName $TargetPC -ErrorAction Stop | Out-Null
     $winrmOk = $true
-    Write-Host "          OK - WinRM est actif" -ForegroundColor Green
+    Write-Host "          OK - WinRM est actif sur $TargetPC." -ForegroundColor Green
 }
 catch {
-    Write-Host "          WinRM inactif. Tentative d'activation..." -ForegroundColor Yellow
+    Write-Host "          WinRM n'est pas actif sur $TargetPC." -ForegroundColor Yellow
+}
+
+if (-not $winrmOk) {
+    Write-Host "          Tentative d'activation de WinRM via WMI..." -ForegroundColor Cyan
     try {
-        $cim = New-CimSession -ComputerName $TargetPC -Credential $Credential -ErrorAction Stop
-        Invoke-CimMethod -CimSession $cim -ClassName Win32_Process -MethodName Create `
-            -Arguments @{ CommandLine = 'powershell -Command "Enable-PSRemoting -Force"' } -ErrorAction Stop | Out-Null
-        Remove-CimSession $cim -ErrorAction SilentlyContinue
+        Invoke-WmiMethod -ComputerName $TargetPC -Class Win32_Process -Name Create -Credential $Credential `
+            -ArgumentList "powershell -Command `"Enable-PSRemoting -Force`"" | Out-Null
         Start-Sleep -Seconds 5
         Test-WSMan -ComputerName $TargetPC -ErrorAction Stop | Out-Null
+        Write-Host "          OK - WinRM a ete active avec succes via WMI." -ForegroundColor Green
         $winrmOk = $true
-        Write-Host "          OK - WinRM active via WMI/CIM" -ForegroundColor Green
     }
     catch {
-        # --- Repli PsExec ---
+        Write-Host "          L'activation WinRM via WMI a echoue." -ForegroundColor Yellow
+        Write-Host "          Tentative d'activation de WinRM via PsExec ..." -ForegroundColor Cyan
         $tempPsExecPath = "$env:TEMP\PsExec.exe"
-        $BSTR = [IntPtr]::Zero
-        $plainPass = $null
+        [IO.File]::WriteAllBytes($tempPsExecPath, [Convert]::FromBase64String($base64PsExec))
         try {
-            if ([string]::IsNullOrEmpty($base64PsExec)) {
-                throw "Blob PsExec absent (variable `$base64PsExec non renseignee)."
-            }
-            [IO.File]::WriteAllBytes($tempPsExecPath, [Convert]::FromBase64String($base64PsExec))
-
-            $BSTR      = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePass)
-            $plainPass = [Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-
-            & $tempPsExecPath \\$TargetPC -u "$Domain\$inputUser" -p $plainPass -accepteula powershell -Command "Enable-PSRemoting -Force" *> $null
+            & $tempPsExecPath \\$TargetPC -u $inputUser -p $plainpassString powershell -Command "Enable-PSRemoting -Force" *> $null
             Start-Sleep -Seconds 5
             Test-WSMan -ComputerName $TargetPC -ErrorAction Stop | Out-Null
+            Write-Host "          OK - WinRM a ete active avec succes via PsExec." -ForegroundColor Green
             $winrmOk = $true
-            Write-Host "          OK - WinRM active via PsExec" -ForegroundColor Green
         }
         catch {
-            Write-Host "  [ERREUR] WinRM inaccessible sur $TargetPC : $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "          L'activation WinRM via PsExec a echoue." -ForegroundColor Yellow
+            Write-Host "  [ERREUR] Impossible d'activer WinRM sur $TargetPC via WMI ou PsExec." -ForegroundColor Red
             exit 1
         }
         finally {
-            if ($BSTR -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR) }
-            if ($plainPass) { Remove-Variable plainPass -ErrorAction SilentlyContinue }
-            if (Test-Path $tempPsExecPath) { Remove-Item $tempPsExecPath -Force -ErrorAction SilentlyContinue }
+            if (Test-Path $tempPsExecPath) { Remove-Item $tempPsExecPath -Force }
         }
     }
 }
@@ -256,11 +262,23 @@ namespace App {
         Thread.Sleep(_interval);
       }
     }
+    // Screen.AllScreens suit l'ordre d'enumeration Windows, sans lien avec la
+    // disposition physique. On trie de gauche a droite pour que "Ecran 1" soit
+    // bien le premier ecran de la vue globale (qui, elle, suit VirtualScreen).
+    static Screen[] OrderedScreens() {
+      Screen[] arr = (Screen[])Screen.AllScreens.Clone();
+      Array.Sort(arr, delegate(Screen a, Screen b) {
+        if (a.Bounds.X != b.Bounds.X) return a.Bounds.X.CompareTo(b.Bounds.X);
+        return a.Bounds.Y.CompareTo(b.Bounds.Y);
+      });
+      return arr;
+    }
     static byte[] EncodeLocked(int mon) {
       if (_bmp == null) return null;
       Rectangle src;
-      if (mon >= 0 && mon < Screen.AllScreens.Length) {
-        Rectangle mb = Screen.AllScreens[mon].Bounds;
+      Screen[] scr = OrderedScreens();
+      if (mon >= 0 && mon < scr.Length) {
+        Rectangle mb = scr[mon].Bounds;
         src = new Rectangle(mb.Left - _bounds.Left, mb.Top - _bounds.Top, mb.Width, mb.Height);
         src.Intersect(new Rectangle(0, 0, _bmp.Width, _bmp.Height));
       } else {
@@ -292,9 +310,10 @@ namespace App {
     }
     public static string MonitorsJson() {
       StringBuilder sb = new StringBuilder();
-      sb.Append("{\"count\":").Append(Screen.AllScreens.Length).Append(",\"screens\":[");
-      for (int i = 0; i < Screen.AllScreens.Length; i++) {
-        Screen s = Screen.AllScreens[i];
+      Screen[] scr = OrderedScreens();
+      sb.Append("{\"count\":").Append(scr.Length).Append(",\"screens\":[");
+      for (int i = 0; i < scr.Length; i++) {
+        Screen s = scr[i];
         if (i > 0) sb.Append(",");
         sb.Append("{\"i\":").Append(i)
           .Append(",\"w\":").Append(s.Bounds.Width)
@@ -308,7 +327,8 @@ namespace App {
     public static string BoundsInfo() {
       lock (_lock) {
         string s = "virtual=" + _bounds.ToString() + " bmp=" + (_bmp == null ? "null" : _bmp.Width + "x" + _bmp.Height);
-        for (int i = 0; i < Screen.AllScreens.Length; i++) s += " | screen" + i + "=" + Screen.AllScreens[i].Bounds.ToString();
+        Screen[] scr = OrderedScreens();
+        for (int i = 0; i < scr.Length; i++) s += " | screen" + i + "=" + scr[i].Bounds.ToString();
         return s;
       }
     }
