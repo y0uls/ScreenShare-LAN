@@ -116,13 +116,42 @@ if (-not $winrmOk) {
 
 # --- [2/5] TRUSTEDHOSTS ---
 Write-Host "  [2/5] Configuration TrustedHosts ..." -ForegroundColor Gray
-$currentTrusted = (Get-Item WSMan:\localhost\Client\TrustedHosts).Value
-if ($currentTrusted -notlike "*$TargetPC*") {
-    $newVal = if ([string]::IsNullOrEmpty($currentTrusted)) { $TargetPC } else { "$currentTrusted,$TargetPC" }
-    Set-Item WSMan:\localhost\Client\TrustedHosts -Value $newVal -Force
-    Write-Host "          OK - $TargetPC ajoute" -ForegroundColor Green
-} else {
-    Write-Host "          OK - Deja dans TrustedHosts" -ForegroundColor Green
+
+# Le lecteur WSMan: n'est accessible que si le service WinRM local est demarre.
+try {
+    $svc = Get-Service -Name WinRM -ErrorAction Stop
+    if ($svc.StartType -eq 'Disabled') { Set-Service -Name WinRM -StartupType Manual -ErrorAction SilentlyContinue }
+    if ($svc.Status -ne 'Running') { Start-Service -Name WinRM -ErrorAction Stop }
+} catch {
+    Write-Host "          Impossible de demarrer le service WinRM local." -ForegroundColor Yellow
+}
+
+# Initialiser la config client WSMan si le chemin TrustedHosts n'existe pas encore.
+if (-not (Test-Path WSMan:\localhost\Client\TrustedHosts)) {
+    cmd /c "winrm quickconfig -quiet" 2>$null | Out-Null
+}
+
+try {
+    $currentTrusted = (Get-Item WSMan:\localhost\Client\TrustedHosts -ErrorAction Stop).Value
+    if ($currentTrusted -notlike "*$TargetPC*") {
+        $newVal = if ([string]::IsNullOrEmpty($currentTrusted)) { $TargetPC } else { "$currentTrusted,$TargetPC" }
+        Set-Item WSMan:\localhost\Client\TrustedHosts -Value $newVal -Force
+        Write-Host "          OK - $TargetPC ajoute" -ForegroundColor Green
+    } else {
+        Write-Host "          OK - Deja dans TrustedHosts" -ForegroundColor Green
+    }
+}
+catch {
+    # Dernier recours : passer par winrm.cmd (ne depend pas du lecteur WSMan:).
+    $line = (winrm get winrm/config/client 2>$null | Select-String 'TrustedHosts' | Select-Object -First 1)
+    $cur  = if ($line) { ($line.ToString() -replace '.*TrustedHosts\s*=\s*','').Trim() } else { '' }
+    if ($cur -like "*$TargetPC*") {
+        Write-Host "          OK - Deja dans TrustedHosts" -ForegroundColor Green
+    } else {
+        $newVal = if ([string]::IsNullOrEmpty($cur)) { $TargetPC } else { "$cur,$TargetPC" }
+        cmd /c "winrm set winrm/config/client @{TrustedHosts=`"$newVal`"}" 2>$null | Out-Null
+        Write-Host "          OK - $TargetPC ajoute (via winrm.cmd)" -ForegroundColor Green
+    }
 }
 
 # ============================================================
