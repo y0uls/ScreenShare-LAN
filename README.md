@@ -20,6 +20,7 @@
 - [Utilisation](#-utilisation)
 - [Paramètres](#-paramètres)
 - [Interface web](#-interface-web)
+- [Enregistrement](#-enregistrement)
 - [Dépannage](#-dépannage)
 - [Sécurité &amp; usage responsable](#-sécurité--usage-responsable)
 - [Structure du projet](#-structure-du-projet)
@@ -52,6 +53,7 @@ Aucune installation permanente sur la cible : le serveur de capture est déploy�
 - 🔒 **Vérification de session** — refuse de démarrer si le poste est verrouillé (capture impossible).
 - 🧹 **Nettoyage complet** en fin de session.
 - 🏷️ **Branding neutre** — dossier, tâche, règle de pare-feu et titre dérivés du paramètre `-AppName`.
+- 🎥 **Enregistrement vidéo** — capture d'une séquence au format WebM directement depuis le navigateur du technicien, écran au choix, sans rien installer côté cible.
 
 ---
 
@@ -150,11 +152,24 @@ Le serveur expose plusieurs points d'accès :
 
 | Route              | Description |
 |--------------------|-------------|
-| `/`                | Page de visualisation (barre de sélection d'écran, rafraîchissement auto) |
+| `/`                | Page de visualisation (barre de sélection d'écran, rafraîchissement auto, bouton d'enregistrement) |
 | `/snapshot?mon=N`  | Une image JPEG. `mon` = index de l'écran ; absent = bureau complet |
 | `/monitors`        | Liste des écrans au format JSON |
 | `/diag`            | Diagnostic (dernière erreur, géométrie, cache) |
 | `/stream?mon=N`    | Flux MJPEG *(historique — conservé mais plus utilisé par la page)* |
+
+---
+
+## 🎥 Enregistrement
+
+La page de visualisation intègre un **enregistreur vidéo** côté navigateur : rien n'est installé ni écrit sur le poste cible.
+
+- Choisissez l'écran dans la barre (`Tous`, `Ecran 1`, `Ecran 2`…), puis cliquez **● REC** ; le bouton passe en **■ STOP** (rouge) pendant la capture.
+- Un second clic arrête l'enregistrement et **télécharge** un fichier `capture-AAAAMMJJ-HHMMSS.webm` sur la machine du technicien.
+- La séquence suit l'écran affiché : changer de moniteur en cours de capture est possible (taille fixe, bandes noires si le format change).
+- Cadence et qualité calées sur le flux (`-Fps` / `-Quality`). Format **WebM** (VP9/VP8), convertible en MP4 avec `ffmpeg` au besoin.
+
+> Compatible Chrome, Edge et Firefox. Sur un navigateur sans prise en charge de `MediaRecorder`, un message l'indique et le partage se poursuit normalement.
 
 ---
 
@@ -164,6 +179,7 @@ Le serveur expose plusieurs points d'accès :
 |----------|---------------------------|
 | **« Aucune session interactive active »** | Le poste est verrouillé ou personne n'est connecté. Demandez à l'utilisateur de déverrouiller sa session, puis relancez. |
 | **WinRM inaccessible** | Activez WinRM sur la cible (`Enable-PSRemoting -Force`) ou renseignez le blob **PsExec** (`$base64PsExec`) dans le script. |
+| **`WSMan:\localhost\Client\TrustedHosts` introuvable** | Le service WinRM **local** (côté technicien) n'était pas démarré. Le script le lance désormais automatiquement ; une console **administrateur** est requise. |
 | **Écran noir malgré une session ouverte** | Consultez `http://<cible>:<port>/diag` et le journal `C:\ProgramData\<AppName>\worker.log`. |
 | **Le flux ne répond pas après 25 s** | Pare-feu, port déjà utilisé, ou worker non lancé. Vérifiez qu'une session est active et testez un autre `-Port`. |
 | **Le port est déjà pris** | Relancez avec un autre `-Port` (ex. `-Port 8090`). |
@@ -180,6 +196,7 @@ Journaux et fichiers utiles sur la cible (supprimés au nettoyage) : `C:\Program
 - **Traces visibles sur la cible.** L'outil est *neutre*, pas *furtif* : la tâche planifiée, la règle de pare-feu, le port en écoute et des événements Windows (création de tâche, WinRM 4104, journal Security) restent visibles. Le nettoyage supprime les artefacts créés, mais pas les événements d'audit déjà écrits.
 - **Cadre légal.** Capturer l'écran d'une personne suppose de l'**informer au préalable** et de disposer d'une base légitime. En France, la surveillance des salariés est encadrée (**Code du travail**, doctrine **CNIL**) : une captation à l'insu de l'utilisateur est en principe **illicite**. Le standard pour du support est que la personne **sait** et **consent** (information, politique interne, ou demande de prise en main).
 - **Recommandation.** Pour un usage conforme, affichez un **indicateur visible de session de support** côté poste et/ou recueillez le **consentement** de l'utilisateur avant de démarrer.
+- **Enregistrements.** Les vidéos produites par le bouton REC sont des **données personnelles** : conservées sur le poste du technicien, elles relèvent des mêmes règles d'information et de consentement, et doivent être protégées puis supprimées selon la politique interne.
 
 Utilisez cet outil uniquement sur des machines que vous êtes **autorisé à administrer**, dans le respect de la réglementation applicable et de la politique de votre organisation.
 
